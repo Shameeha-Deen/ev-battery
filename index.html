@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EV Smart Station Controller</title>
+    <script src="https://unpkg.com"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #111; color: #fff; padding: 20px; text-align: center; }
+        .card { background: #222; padding: 20px; border-radius: 12px; margin: 15px auto; max-width: 400px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        button { background: #00cc66; color: #fff; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin: 5px 0; }
+        button.sec { background: #333; }
+        button.danger { background: #ff3333; }
+        .counter { font-size: 32px; font-weight: bold; color: #00cc66; margin: 10px 0; }
+        .meta { color: #888; font-size: 14px; margin-top: 5px; }
+        .badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-weight: bold; margin-top: 10px; }
+        .badge.free { background: rgba(0,204,102,0.2); color: #00cc66; }
+        .badge.busy { background: rgba(255,51,51,0.2); color: #ff3333; }
+    </style>
+</head>
+<body>
+
+    <h2>🔋 EV Simulation Network Panel</h2>
+    
+    <div class="card">
+        <h3>Node Configuration Role</h3>
+        <p class="meta">Select what entity this specific mobile node represents:</p>
+        <button onclick="setRole('station')">Set as EV Charger Node</button>
+        <button class="sec" onclick="setRole('car')">Set as Car GPS Tracker</button>
+    </div>
+
+    <div id="stationBlock" class="card" style="display:none;">
+        <h3 id="stName">EV Highway Station Node</h3>
+        <p id="stGeo" class="meta">Awaiting Location Coordinates...</p>
+        
+        <div class="counter" id="slotCount">1</div>
+        <p class="meta">Available Charging Slots Left</p>
+        
+        <button class="sec" onclick="changeSlots(1)">➕ Add Open Slot</button>
+        <button class="sec" onclick="changeSlots(-1)">➖ Remove Slot</button>
+        
+        <div id="stStatus" class="badge free">Status: Available for Booking</div>
+        
+        <div id="bookingNotification" style="display:none; margin-top:15px; border-top: 1px solid #44; padding-top:15px;">
+            <p style="color:#ffcc00; font-weight:bold; margin:0;">⚠️ LIVE RESERVATION COMMAND</p>
+            <p id="bookingDetail" style="margin:5px 0 0 0; font-size:15px;">Incoming Car EV1 Booking Request!</p>
+            <button class="danger" style="margin-top:10px;" onclick="confirmBooking()">Confirm Reservation</button>
+        </div>
+    </div>
+
+    <div id="carBlock" class="card" style="display:none;">
+        <h3>🚗 Mobile Car GPS Node</h3>
+        <p id="carGeo" class="meta">Transmitting dynamic driving position coordinates...</p>
+        <div class="badge free">Transmitting Active Location Stream</div>
+    </div>
+
+    <script>
+        // --- MATCH THIS EXACTLY TO YOUR ARDUINO TEAM STRING (Line 13) ---
+        const SECRET_TEAM_KEY = "my_secret_ev_team_2026"; 
+        
+        const B = "ev/" + SECRET_TEAM_KEY;
+        const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt"); // Connects via secure web-sockets
+        
+        let currentRole = "";
+        let stationId = "ST_" + Math.floor(Math.random() * 900 + 100);
+        let slots = 1;
+        let myLat = 13.0827, myLon = 80.2707;
+        let incomingBookingCar = "";
+
+        document.getElementById("stName").innerText = "Simulated Charger (" + stationId + ")";
+
+        // Requests phone native location permissions safely over HTTPS 
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(pos => {
+                myLat = pos.coords.latitude;
+                myLon = pos.coords.longitude;
+                updateGeoDisplay();
+                transmitData();
+            }, err => console.log("GPS Lock Failed"), { enableHighAccuracy: true });
+        }
+
+        function setRole(role) {
+            currentRole = role;
+            document.getElementById("stationBlock").style.display = (role === 'station') ? 'block' : 'none';
+            document.getElementById("carBlock").style.display = (role === 'car') ? 'block' : 'none';
+            if (role === 'station') {
+                client.subscribe(B + "/st/" + stationId + "/reserve");
+            }
+            transmitData();
+        }
+
+        function changeSlots(val) {
+            slots = Math.max(0, slots + val);
+            document.getElementById("slotCount").innerText = slots;
+            const statusBadge = document.getElementById("stStatus");
+            if (slots > 0) {
+                statusBadge.className = "badge free";
+                statusBadge.innerText = "Status: Available for Booking";
+            } else {
+                statusBadge.className = "badge busy";
+                statusBadge.innerText = "Status: Station Busy / Full";
+            }
+            transmitData();
+        }
+
+        function updateGeoDisplay() {
+            const txt = `Lat: ${myLat.toFixed(5)} · Lon: ${myLon.toFixed(5)}`;
+            if (currentRole === 'station') document.getElementById("stGeo").innerText = txt;
+            if (currentRole === 'car') document.getElementById("carGeo").innerText = txt;
+        }
+
+        function transmitData() {
+            if (!client.connected) return;
+            if (currentRole === 'car') {
+                client.publish(B + "/car/pos", jsonString({ lat: myLat, lon: myLon }));
+            } else if (currentRole === 'station') {
+                client.publish(B + "/st/" + stationId + "/state", jsonString({
+                    name: "Phone Station " + stationId, lat: myLat, lon: myLon, kw: 50, free: slots, resv: 1, q: 0
+                }));
+            }
+        }
+
+        client.on('message', (topic, msg) => {
+            if (topic === B + "/st/" + stationId + "/reserve") {
+                const payload = JSON.parse(msg.toString());
+                incomingBookingCar = payload.car || "EV1";
+                document.getElementById("bookingDetail").innerText = `Car ${incomingBookingCar} requested space! ETA: ${Math.round(payload.eta_min || 5)} min. Needed: ${Math.round(payload.kwh || 12)} kWh.`;
+                document.getElementById("bookingNotification").style.display = "block";
+            }
+        });
+
+        function confirmBooking() {
+            client.publish(B + "/st/" + stationId + "/confirm", jsonString({ ok: true, car: incomingBookingCar }));
+            document.getElementById("bookingNotification").style.display = "none";
+            changeSlots(-1); // Automatically occupies one slot upon operator confirmation
+        }
+
+        function jsonString(obj) { return JSON.stringify(obj); }
+        setInterval(transmitData, 3000); // Ticks broadcast loops every 3 seconds
+    </script>
+</body>
+</html>
